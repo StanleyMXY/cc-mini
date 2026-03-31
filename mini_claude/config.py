@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL = "claude-sonnet-4"
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
 _FALLBACK_MAX_TOKENS = 8192
 _MODEL_ALIASES = {
     "claude-opus-4.1": "claude-opus-4-1",
