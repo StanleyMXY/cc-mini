@@ -15,22 +15,40 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL = "claude-opus-4"
-_FALLBACK_MAX_TOKENS = 8192
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
+_FALLBACK_MAX_TOKENS = 32000
 _MODEL_ALIASES = {
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+    "best": "claude-opus-4-6",
+    "claude-opus-4.6": "claude-opus-4-6",
+    "claude-opus-4.5": "claude-opus-4-5",
     "claude-opus-4.1": "claude-opus-4-1",
-    "claude-opus-4": "claude-opus-4-6",
+    "claude-opus-4": "claude-opus-4",
+    "claude-sonnet-4.6": "claude-sonnet-4-6",
+    "claude-sonnet-4.5": "claude-sonnet-4-5",
     "claude-sonnet-4": "claude-sonnet-4",
     "claude-3.7-sonnet": "claude-3-7-sonnet",
     "claude-3.5-sonnet": "claude-3-5-sonnet",
     "claude-3.5-haiku": "claude-3-5-haiku",
     "claude-3-haiku": "claude-3-haiku",
 }
+# First prefix match wins. Values from official getModelMaxOutputTokens().
 _MODEL_MAX_TOKENS = (
+    ("claude-opus-4-6", 64000),
+    ("claude-sonnet-4-6", 32000),
+    ("claude-opus-4-5", 32000),
+    ("claude-sonnet-4-5", 32000),
+    ("claude-sonnet-4", 32000),
+    ("claude-haiku-4", 32000),
     ("claude-opus-4-1", 32000),
     ("claude-opus-4", 32000),
-    ("claude-sonnet-4", 64000),
-    ("claude-3-7-sonnet", 64000),
+    ("claude-3-7-sonnet", 32000),
     ("claude-3-5-sonnet", 8192),
     ("claude-3-5-haiku", 8192),
     ("claude-3-haiku", 4096),

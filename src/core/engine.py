@@ -7,6 +7,7 @@ from .tools.base import Tool, ToolResult
 from .permissions import PermissionChecker
 
 if TYPE_CHECKING:
+    from .cost_tracker import CostTracker
     from .session import SessionStore
 
 _MAX_RETRIES = 3
@@ -102,7 +103,8 @@ class Engine:
                  max_tokens: int | None = None,
                  api_key: str | None = None,
                  base_url: str | None = None,
-                 session_store: SessionStore | None = None):
+                 session_store: SessionStore | None = None,
+                 cost_tracker: CostTracker | None = None):
         self._model = resolve_model(model)
         self._max_tokens = max_tokens or default_max_tokens_for_model(self._model)
         self._client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
@@ -114,6 +116,7 @@ class Engine:
         self._turn_start_len: int | None = None
         self._active_stream = None  # reference to current HTTP stream
         self._session_store = session_store
+        self._cost_tracker = cost_tracker
 
     # -- message accessors (for compact / resume / commands) ----------------
 
@@ -134,6 +137,13 @@ class Engine:
 
     def set_session_store(self, store: SessionStore | None) -> None:
         self._session_store = store
+
+    def get_model(self) -> str:
+        return self._model
+
+    def set_model(self, model: str) -> None:
+        self._model = resolve_model(model)
+        self._max_tokens = default_max_tokens_for_model(self._model)
 
     def _persist(self, message: dict) -> None:
         """Append message to session store if available."""
@@ -236,6 +246,7 @@ class Engine:
                 final = None
                 for attempt in range(_MAX_RETRIES):
                     try:
+                        _api_t0 = time.monotonic()
                         with self._client.messages.stream(
                             model=self._model,
                             max_tokens=self._max_tokens,
@@ -258,6 +269,16 @@ class Engine:
                                 yield ("waiting",)
 
                             final = stream.get_final_message()
+                            _api_elapsed = time.monotonic() - _api_t0
+                            # Track token usage / cost
+                            if final.usage and self._cost_tracker:
+                                self._cost_tracker.add_usage(self._model, {
+                                    "input_tokens": final.usage.input_tokens,
+                                    "output_tokens": final.usage.output_tokens,
+                                    "cache_read_input_tokens": getattr(final.usage, "cache_read_input_tokens", 0) or 0,
+                                    "cache_creation_input_tokens": getattr(final.usage, "cache_creation_input_tokens", 0) or 0,
+                                }, api_duration_s=_api_elapsed)
+                                yield ("usage", final.usage)
                             for block in final.content:
                                 if block.type == "tool_use":
                                     tool_uses.append(block)
@@ -334,6 +355,31 @@ class Engine:
             return ToolResult(content="Permission denied.", is_error=True)
 
         try:
-            return tool.execute(**tool_use.input)
+            # Snapshot file for diff if it's a write tool we want to track
+            old_lines: list[str] | None = None
+            if self._cost_tracker and tool_use.name in ("Edit", "Write"):
+                fp = tool_use.input.get("file_path", "")
+                try:
+                    from pathlib import Path
+                    p = Path(fp)
+                    old_lines = p.read_text().splitlines() if p.exists() else []
+                except Exception:
+                    old_lines = None
+
+            result = tool.execute(**tool_use.input)
+
+            # Track line changes for Edit/Write
+            if self._cost_tracker and old_lines is not None and not result.is_error:
+                fp = tool_use.input.get("file_path", "")
+                try:
+                    from pathlib import Path
+                    new_lines = Path(fp).read_text().splitlines()
+                    added = max(len(new_lines) - len(old_lines), 0)
+                    removed = max(len(old_lines) - len(new_lines), 0)
+                    self._cost_tracker.add_lines_changed(added, removed)
+                except Exception:
+                    pass
+
+            return result
         except Exception as e:
             return ToolResult(content=f"Tool error: {e}", is_error=True)

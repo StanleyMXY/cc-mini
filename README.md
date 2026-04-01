@@ -4,6 +4,7 @@ A lightweight Python implementation of [Claude Code](https://claude.ai/code) for
 
 ## Features
 
+
 - **Interactive REPL** with command history
 - **Streaming responses** — text appears as it is generated
 - **Agentic tool loop** — multiple tool calls per turn

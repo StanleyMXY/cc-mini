@@ -16,6 +16,7 @@ from rich.table import Table
 if TYPE_CHECKING:
     from .compact import CompactService
     from .config import AppConfig
+    from .cost_tracker import CostTracker
     from .engine import Engine
     from .permissions import PermissionChecker
     from .session import SessionStore
@@ -34,9 +35,9 @@ class CommandContext:
     app_config: AppConfig
     memory_dir: Path | None = None
     permissions: PermissionChecker | None = None
-    run_dream: object = None  # Callable[[], None]
-    # Callable that creates a fresh SessionStore (for /clear, /resume)
-    new_session_store: object = None  # Callable[[], SessionStore]
+    run_dream: object = None
+    cost_tracker: CostTracker | None = None
+    new_session_store: object = None
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +266,135 @@ def _cmd_skills(ctx: CommandContext, args: str) -> None:
         hint = f" [{s.argument_hint}]" if s.argument_hint else ""
         table.add_row(f"/{s.name}{hint}", s.source, s.description)
     ctx.console.print(table)
+def _cmd_cost(ctx: CommandContext, args: str) -> None:
+    if ctx.cost_tracker is None:
+        ctx.console.print("[dim]Cost tracking is not available.[/dim]")
+        return
+    ctx.console.print(ctx.cost_tracker.format_cost())
+
+
+def _cmd_model(ctx: CommandContext, args: str) -> None:
+    from .config import resolve_model, default_max_tokens_for_model, DEFAULT_MODEL
+
+    if args:
+        ctx.engine.set_model(args.strip())
+        actual = ctx.engine.get_model()
+        ctx.console.print(
+            f"[green]✓[/green] Set model to [bold]{actual}[/bold]  "
+            f"(max_tokens={default_max_tokens_for_model(actual)})")
+        return
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    current = ctx.engine.get_model()
+
+    # Marketing name lookup
+    _NAMES = {
+        "claude-sonnet-4-6": "Sonnet 4.6", "claude-sonnet-4-5": "Sonnet 4.5",
+        "claude-sonnet-4": "Sonnet 4", "claude-opus-4-6": "Opus 4.6",
+        "claude-opus-4-5": "Opus 4.5", "claude-opus-4-1": "Opus 4.1",
+        "claude-opus-4": "Opus 4", "claude-haiku-4-5": "Haiku 4.5",
+        "claude-3-5-haiku": "Haiku 3.5",
+    }
+    display = next((n for p, n in _NAMES.items() if p in current), "Sonnet 4.6")
+
+    # (alias, label, description) — from modelOptions.ts PAYG 1P path
+    # 1M context variants omitted: require SDK betas not available in cc-mini
+    options = [
+        (DEFAULT_MODEL, "Default (recommended)", f"Use the default model (currently {display}) · $3/$15 per Mtok"),
+        ("sonnet",      "Sonnet",                "Sonnet 4.6 · Best for everyday tasks · $3/$15 per Mtok"),
+        ("opus",        "Opus",                  "Opus 4.6 · Most capable for complex work · $5/$25 per Mtok"),
+        ("haiku",       "Haiku",                 "Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok"),
+    ]
+
+    effort_levels = ["low", "medium", "high"]
+    effort_sym = {"low": "◑", "medium": "◕", "high": "●"}
+
+    cursor = [0]
+    for i, (alias, _, _) in enumerate(options):
+        if resolve_model(alias) == current:
+            cursor[0] = i
+            break
+
+    effort_idx = [2]
+    result: list[str | None] = [None]
+    max_label = max(len(l) for _, l, _ in options)
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _(e): cursor.__setitem__(0, (cursor[0] - 1) % len(options))
+    @kb.add("down")
+    def _(e): cursor.__setitem__(0, (cursor[0] + 1) % len(options))
+    @kb.add("left")
+    def _(e): effort_idx.__setitem__(0, (effort_idx[0] - 1) % len(effort_levels))
+    @kb.add("right")
+    def _(e): effort_idx.__setitem__(0, (effort_idx[0] + 1) % len(effort_levels))
+
+    @kb.add("enter")
+    def _(e):
+        result[0] = options[cursor[0]][0]
+        e.app.exit()
+
+    for i in range(min(len(options), 9)):
+        @kb.add(str(i + 1))
+        def _(e, idx=i):
+            cursor[0] = idx
+            result[0] = options[idx][0]
+            e.app.exit()
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _(e): e.app.exit()
+
+    def _tokens():
+        t = [("bold ansibrightcyan", "  Select model\n"),
+             ("ansigray", "  Switch between Claude models. Applies to this session and future\n"
+                          "  Claude Code sessions. For other/previous model names, specify with --model.\n\n")]
+        for i, (alias, label, desc) in enumerate(options):
+            is_cur = i == cursor[0]
+            is_active = resolve_model(alias) == current
+            ptr = "❯" if is_cur else " "
+            sty = "ansibrightcyan" if is_cur else ""
+            chk = " ✔" if is_active else ""
+            t.append((sty, f"  {ptr} {i+1}. {(label + chk).ljust(max_label + 3)}"))
+            t.append(("ansigray", desc))
+            t.append(("", "\n"))
+
+        eff = effort_levels[effort_idx[0]]
+        t.append(("", "\n"))
+        t.append(("ansigray", "  Effort: "))
+        for lvl in effort_levels:
+            s = "bold ansibrightcyan" if lvl == eff else "ansigray"
+            t.append((s, f" {effort_sym[lvl]} {lvl} "))
+        t.append(("", "\n"))
+        t.append(("ansigray", "  ↑↓ select · ←→ effort · ↵ confirm · esc cancel"))
+        return t
+
+    app: Application = Application(
+        layout=Layout(Window(FormattedTextControl(_tokens))),
+        key_bindings=kb, full_screen=False)
+
+    try:
+        app.run()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+    if result[0] is None:
+        ctx.console.print(f"[dim]Kept model as {current}[/dim]")
+        return
+
+    ctx.engine.set_model(result[0])
+    actual = ctx.engine.get_model()
+    eff = effort_levels[effort_idx[0]]
+    ctx.console.print(
+        f"[green]✓[/green] Set model to [bold]{actual}[/bold]  "
+        f"(max_tokens={default_max_tokens_for_model(actual)}, effort={eff})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +412,8 @@ _COMMAND_TABLE: list[tuple[str, str, object]] = [
     ("remember", "Save a note to the daily log [text]",             _cmd_remember),
     ("dream",    "Consolidate daily logs into topic files",          _cmd_dream),
     ("skills",   "List all available skills",                       _cmd_skills),
+    ("cost",    "Show token usage and cost summary",               _cmd_cost),
+    ("model",   "Show or switch model [model-name]",               _cmd_model),
 ]
 
 _HANDLERS: dict[str, object] = {name: handler for name, _, handler in _COMMAND_TABLE}

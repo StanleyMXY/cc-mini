@@ -14,10 +14,42 @@ import anthropic
 # ---------------------------------------------------------------------------
 
 CHARS_PER_TOKEN = 4
-COMPACT_THRESHOLD_TOKENS = 100_000  # trigger auto-compact
+COMPACT_THRESHOLD_TOKENS = 100_000  # fallback threshold (no real usage data)
 MIN_RECENT_MESSAGES = 6             # always keep at least this many messages
 MIN_RECENT_TOKENS = 10_000          # keep at least this many tokens of recent context
 COMPACT_MAX_OUTPUT_TOKENS = 4096
+AUTOCOMPACT_BUFFER_TOKENS = 13_000  # matches official autoCompact.ts
+
+# Model context windows (tokens).  First match wins.
+_CONTEXT_WINDOWS: list[tuple[str, int]] = [
+    ("claude-opus-4-6", 1_000_000),
+    ("claude-opus-4-5", 1_000_000),
+    ("claude-opus-4",   200_000),
+    ("claude-sonnet-4-6", 1_000_000),
+    ("claude-sonnet-4-5", 1_000_000),
+    ("claude-sonnet-4", 200_000),
+    ("claude-sonnet",   200_000),
+    ("claude-3-7-sonnet", 200_000),
+    ("claude-3-5-sonnet", 200_000),
+    ("claude-haiku-4-5", 200_000),
+    ("claude-3-5-haiku", 200_000),
+]
+_DEFAULT_CONTEXT_WINDOW = 200_000
+
+
+def _context_window_for_model(model: str) -> int:
+    model_lower = model.lower()
+    for prefix, window in _CONTEXT_WINDOWS:
+        if prefix in model_lower:
+            return window
+    return _DEFAULT_CONTEXT_WINDOW
+
+
+def _auto_compact_threshold(model: str) -> int:
+    """context_window - max_output_reserve - buffer (matches official)."""
+    cw = _context_window_for_model(model)
+    max_out_reserve = min(20_000, cw // 5)  # reserve for summary output
+    return cw - max_out_reserve - AUTOCOMPACT_BUFFER_TOKENS
 
 COMPACT_PROMPT = """\
 Please provide a detailed summary of our conversation so far.  This summary \
@@ -84,8 +116,16 @@ def estimate_tokens(messages: list[dict]) -> int:
     return total_chars // CHARS_PER_TOKEN
 
 
-def should_compact(messages: list[dict]) -> bool:
-    """Return True when the conversation should be auto-compacted."""
+def should_compact(messages: list[dict], model: str | None = None,
+                   last_input_tokens: int | None = None) -> bool:
+    """Return True when the conversation should be auto-compacted.
+
+    If *last_input_tokens* (from the API response) is available, use it
+    against a model-aware threshold (matches official ``autoCompact.ts``).
+    Otherwise fall back to the character-based estimate.
+    """
+    if last_input_tokens and model:
+        return last_input_tokens >= _auto_compact_threshold(model)
     return estimate_tokens(messages) > COMPACT_THRESHOLD_TOKENS
 
 

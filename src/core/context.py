@@ -10,7 +10,18 @@ Guidelines:
 - Always read a file before editing it
 - Prefer small, targeted edits over rewriting large sections
 - Run tests after making changes when test commands are available
-- Use Glob/Grep to find relevant files before reading them all"""
+- Use Glob/Grep to find relevant files before reading them all
+
+Use the AskUserQuestion tool when you need to ask the user questions during execution. This allows you to:
+1. Gather user preferences or requirements
+2. Clarify ambiguous instructions
+3. Get decisions on implementation choices as you work
+4. Offer choices to the user about what direction to take
+
+Usage notes:
+- Users will always be able to select "Other" to provide custom text input
+- Use multiSelect: true to allow multiple answers to be selected for a question
+- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label"""
 
 
 def build_system_prompt(cwd: str | None = None, memory_dir: Path | None = None) -> str:

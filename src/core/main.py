@@ -23,6 +23,7 @@ from rich.text import Text
 
 from .config import load_app_config
 from .context import build_system_prompt
+from .cost_tracker import CostTracker
 from .engine import AbortedError, Engine
 from .session import SessionStore
 from .compact import CompactService, estimate_tokens, should_compact
@@ -31,6 +32,7 @@ from ._keylistener import EscListener
 from .permissions import PermissionChecker
 from .sandbox.config import load_sandbox_config
 from .sandbox.manager import SandboxManager
+from .tools.ask_user import AskUserQuestionTool
 from .tools.bash import BashTool
 from .tools.file_edit import FileEditTool
 from .tools.file_read import FileReadTool
@@ -72,6 +74,8 @@ class _SlashCommandCompleter(Completer):
         ('resume',  'Resume a past session'),
         ('history', 'List saved sessions'),
         ('clear',   'Clear conversation, start new session'),
+        ('cost',    'Show token usage and cost summary'),
+        ('model',   'Show or switch model'),
         ('skills',  'List all available skills'),
         ('buddy',   'Companion pet — hatch, pet, stats, mute/unmute'),
         ('buddy pet',   'Pet your companion'),
@@ -346,6 +350,7 @@ def main() -> None:
         FileReadTool(), GlobTool(), GrepTool(),
         FileEditTool(), FileWriteTool(),
         BashTool(sandbox_manager=sandbox_mgr),
+        AskUserQuestionTool(),
     ]
     system_prompt = build_system_prompt(memory_dir=memory_dir)
     if skills_section:
@@ -356,6 +361,7 @@ def main() -> None:
     )
 
     # Session & compact services
+    cost_tracker = CostTracker()
     session_store: SessionStore | None = None
     if not args.print:
         session_store = SessionStore(cwd=cwd, model=app_config.model)
@@ -369,6 +375,7 @@ def main() -> None:
         model=app_config.model,
         max_tokens=app_config.max_tokens,
         session_store=session_store,
+        cost_tracker=cost_tracker,
     )
     compact_service = CompactService(client=engine._client, model=app_config.model)
 
@@ -402,6 +409,8 @@ def main() -> None:
     if args.print or args.prompt:
         prompt_text = args.prompt or sys.stdin.read()
         run_query(engine, _parse_input(prompt_text), print_mode=args.print, permissions=permissions)
+        if cost_tracker.total_cost_usd > 0:
+            console.print(f"\n[dim]{cost_tracker.format_cost()}[/dim]")
         return
 
     # Interactive REPL
@@ -564,6 +573,7 @@ def main() -> None:
                 memory_dir=memory_dir,
                 permissions=permissions,
                 run_dream=lambda: _run_dream(engine, memory_dir, permissions),
+                cost_tracker=cost_tracker,
                 new_session_store=lambda: SessionStore(cwd=cwd, model=app_config.model),
             )
             handle_command(cmd_name, cmd_args, cmd_ctx)
@@ -571,7 +581,8 @@ def main() -> None:
             continue
 
         # Auto-compact when approaching token limits
-        if should_compact(engine.get_messages()):
+        if should_compact(engine.get_messages(), model=app_config.model,
+                          last_input_tokens=cost_tracker.last_input_tokens):
             console.print("[dim]Auto-compacting conversation…[/dim]")
             try:
                 new_msgs, _ = compact_service.compact(
@@ -660,6 +671,10 @@ def main() -> None:
                 console.print("\n[dim]Auto-dream triggered (enough time + sessions since last consolidation)…[/dim]")
                 _run_dream(engine, memory_dir, permissions)
                 release_lock(memory_dir)
+
+    # Print cost summary on exit
+    if cost_tracker.total_cost_usd > 0:
+        console.print(f"\n[dim]{cost_tracker.format_cost()}[/dim]")
 
 
 def _handle_sandbox_command(

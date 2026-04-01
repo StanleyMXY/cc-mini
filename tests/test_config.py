@@ -31,7 +31,9 @@ def test_resolve_model_keeps_full_model_name():
 
 
 def test_default_max_tokens_follow_model_family():
-    assert default_max_tokens_for_model("claude-sonnet-4") == 64000
+    # Matches official getModelMaxOutputTokens() in context.ts
+    assert default_max_tokens_for_model("claude-sonnet-4") == 32000
+    assert default_max_tokens_for_model("claude-opus-4-6") == 64000
     assert default_max_tokens_for_model("claude-opus-4-1-20250805") == 32000
     assert default_max_tokens_for_model("claude-3-5-haiku-20241022") == 8192
 
@@ -56,7 +58,7 @@ def test_load_app_config_reads_anthropic_section(tmp_path: Path, monkeypatch: py
     assert config.api_key == "config-key"
     assert config.base_url == "https://example.test"
     assert config.model == "claude-3-7-sonnet"
-    assert config.max_tokens == 64000
+    assert config.max_tokens == 32000  # 3-7-sonnet: 32k per official context.ts
 
 
 def test_load_app_config_cli_overrides_env_and_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
