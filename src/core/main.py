@@ -165,9 +165,8 @@ def _bordered_prompt(
             w = os.get_terminal_size().columns
         except OSError:
             w = 80
-        label = "\u2500\u2500 Human "
-        fill = "\u2500" * max(0, w - 1 - len(label))
-        return [('bold fg:ansicyan', f'\u256d{label}{fill}')]
+        fill = "\u2500" * max(0, w - 1)
+        return [('bold fg:ansicyan', f'\u256d{fill}')]
 
     def _bot():
         try:
